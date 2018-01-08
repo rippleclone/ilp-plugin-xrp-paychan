@@ -21,6 +21,7 @@ const CHANNEL_KEYS = 'ilp-plugin-xrp-paychan-channel-keys'
 const DEFAULT_CHANNEL_AMOUNT = 1000000
 const DEFAULT_BANDWIDTH = 2000
 const DEFAULT_FUND_THRESHOLD = 0.9
+const DEFAULT_CLAIM_INTERVAL = 5 * 60 * 1000
 const {
   STATE_NO_CHANNEL,
   STATE_CREATING_CHANNEL,
@@ -98,6 +99,7 @@ class PluginXrpPaychan extends PluginBtp {
     this._bandwidth = opts.maxUnsecured || DEFAULT_BANDWIDTH
     this._fundThreshold = opts.fundThreshold || DEFAULT_FUND_THRESHOLD
     this._channelAmount = opts.channelAmount || DEFAULT_CHANNEL_AMOUNT
+    this._claimInterval = opts.claimInterval || DEFAULT_CLAIM_INTERVAL
 
     this._prefix = opts.prefix // TODO: shouldn't be needed at all
     this._settleDelay = opts.settleDelay || MIN_SETTLE_DELAY
@@ -171,6 +173,7 @@ class PluginXrpPaychan extends PluginBtp {
     debug('retrieving details for incoming channel', this._incomingChannel)
     try {
       this._incomingChannelDetails = await this._api.getPaymentChannel(this._incomingChannel)
+      this._lastClaimedAmount = new BigNumber(xrpToDrops(this._incomingChannelDetails.balance))
       debug('incoming channel details are:', this._incomingChannelDetails)
     } catch (err) {
       if (err.name === 'RippledError' && err.message === 'entryNotFound') {
@@ -205,6 +208,16 @@ class PluginXrpPaychan extends PluginBtp {
         this._incomingChannelDetails.destination)
       throw new Error('Channel destination address wrong')
     }
+
+    this._claimIntervalId = setInterval(async () => {
+      if (this._lastClaimedAmount.lessThan(this._incomingClaim.amount)) {
+        debug('starting automatic claim. amount=' + this._incomingClaim.amount)
+        this._lastClaimedAmount = this._incomingClaim.amount
+        await this._claimFunds()
+        debug('claimed funds.')
+      }
+    // TODO: configurable interval
+    }, this._claimInterval)
   }
 
   // run after connections are established, but before connect resolves
@@ -324,6 +337,7 @@ class PluginXrpPaychan extends PluginBtp {
 
   async _disconnect () {
     debug('disconnecting payment channel')
+    clearInterval(this._claimIntervalId)
     try {
       await this._claimFunds()
     } catch (e) {
